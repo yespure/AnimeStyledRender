@@ -1,4 +1,5 @@
 ﻿#pragma once
+
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
 #include "UObject/WeakObjectPtr.h"
@@ -6,12 +7,6 @@
 class USkeletalMesh;
 struct FAssetData;
 
-struct FFaceSDFTriangle
-{
-	FVector2D UV0;
-	FVector2D UV1;
-	FVector2D UV2;
-};
 class SFaceSDFGeneratorWindow : public SCompoundWidget
 {
 public:
@@ -50,15 +45,25 @@ private:
     FText GetOutputNameText() const;
     void OnOutputNameChanged(const FText& NewText);
 
+    // ===== Shadow Mask 批量导入 =====
+    FReply OnSelectShadowMasksClicked();
+    FReply OnGenerateAllSDFClicked();
+    FText GetShadowMaskStatusText() const;
+
+    bool ReadShadowMaskPNG(
+        const FString& FilePath,
+        TArray<uint8>& OutPixels,
+        int32& OutWidth,
+        int32& OutHeight);
+
+    TArray<FString> SelectedShadowMaskFiles;
+
     int32 LODIndex = 0;
     int32 SectionIndex = 0;
     int32 UVChannel = 0;
     int32 Resolution = 128;
-    FString OutputName = TEXT("FaceSDF");
-    TWeakObjectPtr<USkeletalMesh> SelectedMesh;
-    bool ExtractFaceTriangles(TArray<FFaceSDFTriangle>& OutTriangles);//三角形三坐标数组
 
-    bool RasterizeFaceMask(
-        const TArray<FFaceSDFTriangle>& Triangles,
-		TArray<uint8>& OutPixels);//光栅化三角形到像素数组
+    FString OutputName = TEXT("FaceSDF");
+
+    TWeakObjectPtr<USkeletalMesh> SelectedMesh;
 };

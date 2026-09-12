@@ -23,7 +23,10 @@ public class FaceSDFEditor : ModuleRules
                 "SlateCore",
                 "ToolMenus",
                 "PropertyEditor",
-                "InputCore"
+                "InputCore",
+                "AssetTools",
+                "DesktopPlatform",
+                "ImageWrapper"
             }
         );
     }
