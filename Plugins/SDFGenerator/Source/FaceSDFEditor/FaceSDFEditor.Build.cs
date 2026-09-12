@@ -26,7 +26,8 @@ public class FaceSDFEditor : ModuleRules
                 "InputCore",
                 "AssetTools",
                 "DesktopPlatform",
-                "ImageWrapper"
+                "ImageWrapper",
+                "AssetRegistry"
             }
         );
     }

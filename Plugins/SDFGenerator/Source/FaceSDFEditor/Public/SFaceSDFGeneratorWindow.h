@@ -56,6 +56,25 @@ private:
         int32& OutWidth,
         int32& OutHeight);
 
+    // SDF图集生成
+    FReply OnGenerateAtlasClicked();
+
+    bool GenerateSDFAtlas(
+        const TArray<FString>& SDFFiles,
+        TArray<uint8>& OutAtlasPixels,
+        int32& OutAtlasResolution);
+
+    bool LoadPNGAsGrayscale(
+        const FString& FilePath,
+        TArray<uint8>& OutPixels,
+        int32& OutWidth,
+        int32& OutHeight);
+
+    bool SaveSDFAtlasTexture(
+        const TArray<uint8>& Pixels,
+        int32 AtlasResolution,
+        const FString& AssetName);
+
     TArray<FString> SelectedShadowMaskFiles;
 
     int32 LODIndex = 0;

@@ -24,6 +24,12 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Modules/ModuleManager.h"
+#include "ObjectTools.h"
+#include "UObject/Package.h"
+#include "UObject/SavePackage.h"
+
 #define LOCTEXT_NAMESPACE "SFaceSDFGeneratorWindow"
 
 
@@ -251,6 +257,19 @@ void SFaceSDFGeneratorWindow::Construct(const FArguments& InArgs)
                                 this,
                                 &SFaceSDFGeneratorWindow::OnGenerateClicked))
                 ]
+            //生成Atlas
+            + SVerticalBox::Slot()
+                .AutoHeight()
+                .Padding(20.0f)
+                .HAlign(HAlign_Center)
+                [
+                    SNew(SButton)
+                        .Text(LOCTEXT("GenerateBtn", "Generate SDF"))
+                        .OnClicked(
+                            FOnClicked::CreateSP(
+                                this,
+                                &SFaceSDFGeneratorWindow::OnGenerateClicked))
+                ]
         ];
 }
 
@@ -324,6 +343,70 @@ FReply SFaceSDFGeneratorWindow::OnGenerateClicked()
 
     UE_LOG(LogTemp, Warning,
         TEXT("Face SDF: Generation completed successfully."));
+
+    return FReply::Handled();
+}
+
+FReply SFaceSDFGeneratorWindow::OnGenerateAtlasClicked()
+{
+    if (SelectedShadowMaskFiles.Num() != 65)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: Please select exactly 65 files for the 9x9 Atlas."));
+
+        return FReply::Handled();
+    }
+
+    TArray<FString> SDFFiles;
+
+    /*
+     * 这里暂时直接使用已经选择的文件。
+     *
+     * 如果你现在SelectedShadowMaskFiles保存的是
+     * Shadow Mask PNG，那么这里需要先生成SDF，
+     * 再把生成的SDF像素直接放入Atlas。
+     *
+     * 第一版为了跑通流程，我们先把当前选中的
+     * 65张SDF PNG作为输入。
+     */
+
+    SDFFiles = SelectedShadowMaskFiles;
+
+    TArray<uint8> AtlasPixels;
+    int32 AtlasResolution = 0;
+
+    if (!GenerateSDFAtlas(
+        SDFFiles,
+        AtlasPixels,
+        AtlasResolution))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: Failed to generate SDF Atlas."));
+
+        return FReply::Handled();
+    }
+
+    if (!SaveSDFAtlasTexture(
+        AtlasPixels,
+        AtlasResolution,
+        TEXT("FaceSDF_Atlas")))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: Failed to save SDF Atlas."));
+
+        return FReply::Handled();
+    }
+
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("Face SDF: Atlas generation completed successfully."));
 
     return FReply::Handled();
 }
@@ -712,5 +795,364 @@ FReply SFaceSDFGeneratorWindow::OnGenerateAllSDFClicked()
     return FReply::Handled();
 }
 
+//生成PNG读取
+bool SFaceSDFGeneratorWindow::LoadPNGAsGrayscale(
+    const FString& FilePath,
+    TArray<uint8>& OutPixels,
+    int32& OutWidth,
+    int32& OutHeight)
+{
+    TArray<uint8> CompressedData;
+
+    if(!FFileHelper::LoadFileToArray(CompressedData, * FilePath))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: Failed to load PNG: %s"),
+            *FilePath);
+
+        return false;
+    }
+
+    IImageWrapperModule& ImageWrapperModule =
+        FModuleManager::LoadModuleChecked<IImageWrapperModule>(
+            TEXT("ImagerWrapper")
+        );
+    TSharedPtr<IImageWrapper> ImageWrapper =
+        ImageWrapperModule.CreateImageWrapper(
+            EImageFormat::PNG);
+    if (!ImageWrapper.IsValid())
+    {
+        return false;
+    }
+
+    if (!ImageWrapper->SetCompressed(
+        CompressedData.GetData(),
+        CompressedData.Num()))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: Failed to decode PNG: %s"),
+            *FilePath);
+
+        return false;
+    }
+
+    OutWidth = ImageWrapper->GetWidth();
+    OutHeight = ImageWrapper->GetHeight();
+
+    TArray64<uint8> RawData;
+
+    if (!ImageWrapper->GetRaw(
+        ERGBFormat::Gray,
+        8,
+        RawData))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: Failed to convert PNG to grayscale: %s"),
+            *FilePath);
+
+        return false;
+    }
+
+    if (RawData.Num() == 0)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: PNG raw data is invalid: %s"),
+            *FilePath);
+
+        return false;
+    }
+
+    OutPixels.Reset();
+
+    OutPixels.Append(
+        RawData.GetData(),
+        RawData.Num());
+
+    return true;
+
+}
+
+bool SFaceSDFGeneratorWindow::GenerateSDFAtlas(
+    const TArray<FString>& SDFFiles,
+    TArray<uint8>& OutAtlasPixels,
+    int32& OutAtlasResolution)
+{
+    if (SDFFiles.Num() != 65)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: 9x9 Atlas requires 65 SDF files. Current=%d"),
+            SDFFiles.Num());
+
+        return false;
+    }
+
+    TArray<uint8> FirstPixels;//用于确定单张SDF分辨率
+    int32 SDFWidth = 0;
+    int32 SDFHeight = 0;
+
+    if (!LoadPNGAsGrayscale(
+        SDFFiles[0],
+        FirstPixels,
+        SDFWidth,
+        SDFHeight))
+    {
+        return false;
+    }
+
+    if (SDFWidth != SDFHeight)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: SDF texture must be square."));
+
+        return false;
+    }//保护
+
+    const int32 AtlasGridSize = 9;//后续可更改,现在必须是65张
+
+    OutAtlasResolution =
+        SDFWidth * AtlasGridSize;//计算Grid大小
+    const int32 AtlasPixelCount =
+        OutAtlasResolution * OutAtlasResolution;
+
+    OutAtlasPixels.Init(
+        0,
+        AtlasPixelCount);//设定Grid大小
+    //遍历每一张SDF
+    for (const FString& FilePath : SDFFiles)
+    {
+        TArray<uint8> SDFPixels;
+        int32 Width = 0;
+        int32 Height = 0;
+
+        if (!LoadPNGAsGrayscale(
+            FilePath,
+            SDFPixels,
+            Width,
+            Height))
+        {
+            return false;
+        }
+
+        if (Width != SDFWidth ||
+            Height != SDFHeight)
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("Face SDF: SDF resolution mismatch: %s"),
+                *FilePath);
+
+            return false;
+        }//保护+Debug
+
+        FString FileName = FPaths::GetBaseFilename(FilePath);
+        int32 Row = -1;
+        int32 Column = -1;
+
+        TArray<FString> Parts;
+        FileName.ParseIntoArray(
+            Parts,
+            TEXT("_"),
+            true);//FileName严格要求
+
+        if (Parts.Num() < 2)
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("Face SDF: Invalid SDF filename: %s"),
+                *FileName);
+
+            return false;
+        }
+
+        Row = FCString::Atoi(
+            *Parts[Parts.Num() - 2]);
+        Column = FCString::Atoi(
+            *Parts[Parts.Num() - 1]);
+
+        Row -= 1;
+        Column -= 1;
+
+        // 检查Atlas坐标
+        if (Row < 0 || Row >= 9 ||
+            Column < 0 || Column >= 9)
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("Face SDF: Invalid Atlas coordinate: %s"),
+                *FileName);
+
+            return false;
+        }
+
+        // 顶部和底部极点只能存在于第一列
+        if ((Row == 0 || Row == 8) &&
+            Column != 0)
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("Face SDF: Invalid pole position: %s"),
+                *FileName);
+
+            return false;
+        }
+
+        // 将SDF复制到Atlas
+        for (int32 Y = 0; Y < SDFHeight; ++Y)
+        {
+            for (int32 X = 0; X < SDFWidth; ++X)
+            {
+                const int32 AtlasX =
+                    Column * SDFWidth + X;
+
+                const int32 AtlasY =
+                    Row * SDFHeight + Y;
+
+                const int32 AtlasIndex =
+                    AtlasY * OutAtlasResolution +
+                    AtlasX;
+
+                const int32 SDFIndex =
+                    Y * SDFWidth + X;
+
+                OutAtlasPixels[AtlasIndex] =
+                    SDFPixels[SDFIndex];
+            }
+        }
+    }
+
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("Face SDF: 9x9 SDF Atlas generated. Resolution=%d"),
+        OutAtlasResolution);
+
+    return true;
+    
+}
+
+//保存Atlas
+bool SFaceSDFGeneratorWindow::SaveSDFAtlasTexture(
+    const TArray<uint8>& Pixels,
+    int32 AtlasResolution,
+    const FString& AssetName)
+{
+    if (Pixels.Num() !=
+        AtlasResolution * AtlasResolution)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: Invalid Atlas pixel count."));
+
+        return false;
+    }
+    //确定路径以及名称
+    FString SafeAssetName =
+        ObjectTools::SanitizeObjectName(
+            AssetName);
+
+    const FString PackagePath =
+        TEXT("/Game/FaceSDF/") +
+        SafeAssetName;
+    //创建资源包
+    UPackage* Package = CreatePackage(*PackagePath);
+    if (!Package)
+    {
+        return false;
+    }
+
+    UTexture2D* Texture = NewObject<UTexture2D>(
+        Package,
+        *SafeAssetName,
+        RF_Public | RF_Standalone);
+    if (!Texture)
+    {
+        return false;
+    }
+
+    // 初始化纹理源数据
+    Texture->Source.Init(
+        AtlasResolution,
+        AtlasResolution,
+        1,
+        1,
+        TSF_G8);
+
+    uint8* MipData =
+        Texture->Source.LockMip(0);
+
+    FMemory::Memcpy(
+        MipData,
+        Pixels.GetData(),
+        Pixels.Num());
+
+    // 解锁纹理数据
+    Texture->Source.UnlockMip(0);
+
+    // 纹理设置
+    Texture->SRGB = false;
+    Texture->CompressionSettings =
+        TC_Grayscale;
+    Texture->MipGenSettings =
+        TMGS_NoMipmaps;
+    Texture->Filter =
+        TF_Bilinear;
+
+    Texture->UpdateResource();
+
+    FAssetRegistryModule::AssetCreated(
+        Texture);
+
+    Package->MarkPackageDirty();
+
+    const FString PackageFileName =
+        FPackageName::LongPackageNameToFilename(
+            PackagePath,
+            FPackageName::GetAssetPackageExtension());
+
+    FSavePackageArgs SaveArgs;
+
+    SaveArgs.TopLevelFlags =
+        RF_Public | RF_Standalone;
+
+    if (!UPackage::SavePackage(
+        Package,
+        Texture,
+        *PackageFileName,
+        SaveArgs))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Face SDF: Failed to save SDF Atlas."));
+
+        return false;
+    }
+
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("Face SDF: SDF Atlas saved: %s"),
+        *PackagePath);
+
+    return true;
+
+}
 
 #undef LOCTEXT_NAMESPACE
